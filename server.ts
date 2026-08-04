@@ -313,7 +313,36 @@ async function dispatchAlerts(
 
     // ─── Email Alert ────────────────────────────────────────────────────────
     if (contact.email) {
-      if (resendApiKey) {
+      const brevoApiKey = process.env.BREVO_API_KEY?.trim();
+      if (brevoApiKey) {
+        try {
+          console.log(`[EMAIL ATTEMPT] Sending TO: ${contact.email} via Brevo HTTP API`);
+          const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+            method: "POST",
+            headers: {
+              "api-key": brevoApiKey,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              sender: { name: "Silent Signal", email: process.env.SMTP_FROM || "sehran.azam@gmail.com" },
+              to: [{ email: contact.email }],
+              subject: emailSubject,
+              htmlContent: emailHtml,
+            }),
+          });
+
+          if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.message || `HTTP ${response.status}`);
+          }
+
+          results.push(`EMAIL ✓ → ${contact.name} (${contact.email})`);
+          console.log(`[EMAIL ✓] Successfully sent via Brevo to ${contact.name} (${contact.email})`);
+        } catch (err: any) {
+          results.push(`EMAIL ✗ → ${contact.name}: ${err.message}`);
+          console.error(`[EMAIL ✗] Failed to send via Brevo to ${contact.name} (${contact.email}): ${err.message}`);
+        }
+      } else if (resendApiKey) {
         try {
           console.log(`[EMAIL ATTEMPT] Sending TO: ${contact.email} via Resend HTTP API`);
           const response = await fetch("https://api.resend.com/emails", {
