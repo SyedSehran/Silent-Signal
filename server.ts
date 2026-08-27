@@ -316,7 +316,8 @@ async function dispatchAlerts(
       const brevoApiKey = process.env.BREVO_API_KEY?.trim();
       if (brevoApiKey) {
         try {
-          console.log(`[EMAIL ATTEMPT] Sending TO: ${contact.email} via Brevo HTTP API`);
+          const senderEmail = process.env.SMTP_FROM?.trim() || process.env.SMTP_USER?.trim() || "sehran.azam@gmail.com";
+          console.log(`[EMAIL ATTEMPT] Sending TO: ${contact.email} FROM: ${senderEmail} via Brevo HTTP API`);
           const response = await fetch("https://api.brevo.com/v3/smtp/email", {
             method: "POST",
             headers: {
@@ -324,7 +325,7 @@ async function dispatchAlerts(
               "Content-Type": "application/json",
             },
             body: JSON.stringify({
-              sender: { name: "Silent Signal", email: process.env.SMTP_FROM || "sehran.azam@gmail.com" },
+              sender: { name: "Silent Signal", email: senderEmail },
               to: [{ email: contact.email }],
               subject: emailSubject,
               htmlContent: emailHtml,
@@ -333,7 +334,8 @@ async function dispatchAlerts(
 
           if (!response.ok) {
             const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.message || `HTTP ${response.status}`);
+            const errMsg = errorData.message || errorData.code || `HTTP ${response.status}`;
+            throw new Error(`Brevo API Error (${response.status}): ${errMsg}`);
           }
 
           results.push(`EMAIL ✓ → ${contact.name} (${contact.email})`);
@@ -1113,29 +1115,41 @@ async function startServer() {
   });
 
   // ─── AI: incident report for evidence token ────────────────────────────
-  app.get("/api/ai/incident-report/:token", authenticateToken, async (req: Request, res: Response) => {
+  app.get("/api/ai/incident-report/:token?", authenticateToken, async (req: Request, res: Response) => {
     try {
       const userId = (req as any).userId;
       const { token } = req.params;
 
-      const sessionRow = db
-        .prepare(
-          `SELECT user_id, share_expires_at FROM sos_logs WHERE share_token = ? AND user_id = ? LIMIT 1`
-        )
-        .get(token, userId) as { user_id: number; share_expires_at: string | null } | undefined;
+      let resolvedToken = token;
+      if (!resolvedToken || resolvedToken === "latest") {
+        const latestSession = db
+          .prepare(
+            `SELECT share_token FROM sos_logs WHERE user_id = ? AND share_token IS NOT NULL ORDER BY created_at DESC LIMIT 1`
+          )
+          .get(userId) as { share_token: string } | undefined;
+        resolvedToken = latestSession?.share_token;
+      }
 
-      if (!sessionRow) {
-        return res.status(404).json({ error: "Session not found" });
+      let logs: any[] = [];
+      if (resolvedToken) {
+        logs = db
+          .prepare(
+            `SELECT encrypted_coords, audio_url, status, trigger_method, created_at
+             FROM sos_logs WHERE share_token = ? AND user_id = ? ORDER BY created_at ASC`
+          )
+          .all(resolvedToken, userId) as any[];
+      }
+
+      if (logs.length === 0) {
+        logs = db
+          .prepare(
+            `SELECT encrypted_coords, audio_url, status, trigger_method, created_at
+             FROM sos_logs WHERE user_id = ? ORDER BY created_at ASC LIMIT 50`
+          )
+          .all(userId) as any[];
       }
 
       const user = db.prepare("SELECT username FROM users WHERE id = ?").get(userId) as any;
-      const logs = db
-        .prepare(
-          `SELECT encrypted_coords, audio_url, status, trigger_method, created_at
-           FROM sos_logs WHERE share_token = ? ORDER BY created_at ASC`
-        )
-        .all(token) as any[];
-
       const locations: { latitude: number; longitude: number; time: string }[] = [];
       let audioCount = 0;
       let primaryTrigger = "DURESS_PIN";
@@ -1149,7 +1163,7 @@ async function startServer() {
               longitude: coords.lng,
               time: log.created_at,
             });
-            if (log.trigger_method !== "INTERVAL" && log.trigger_method !== "BATCH") {
+            if (log.trigger_method && log.trigger_method !== "INTERVAL" && log.trigger_method !== "BATCH") {
               primaryTrigger = log.trigger_method;
             }
           }
@@ -1164,7 +1178,7 @@ async function startServer() {
         audioCount,
       });
 
-      res.json({ report: report || "AI report unavailable — configure GEMINI_API_KEY" });
+      res.json({ report });
     } catch (err: any) {
       console.error("Incident report error:", err);
       res.status(500).json({ error: "Failed to generate report" });
@@ -1175,7 +1189,10 @@ async function startServer() {
   app.get("/api/alerts/status", (_req: Request, res: Response) => {
     res.json({
       sms: Boolean(getTwilioClient()),
-      email: Boolean(process.env.RESEND_API_KEY?.trim()) || Boolean(getMailTransporter()),
+      email:
+        Boolean(process.env.RESEND_API_KEY?.trim()) ||
+        Boolean(process.env.BREVO_API_KEY?.trim()) ||
+        Boolean(getMailTransporter()),
     });
   });
 

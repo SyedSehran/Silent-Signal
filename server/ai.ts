@@ -47,20 +47,64 @@ Keep titles under 60 chars and content under 120 chars.`,
   return DEFAULT_NOTES;
 }
 
+export function buildLocalIncidentReport(evidence: {
+  username: string;
+  triggerLabel: string;
+  locations: { latitude: number; longitude: number; time: string }[];
+  audioCount: number;
+}): string {
+  const locCount = evidence.locations.length;
+  const latestLoc = locCount > 0 ? evidence.locations[locCount - 1] : null;
+  const firstLoc = locCount > 0 ? evidence.locations[0] : null;
+
+  let timelineStr = "";
+  if (evidence.locations.length > 0) {
+    timelineStr = evidence.locations
+      .slice(-5)
+      .map(
+        (loc) =>
+          `  - ${new Date(loc.time).toLocaleString()}: Lat ${loc.latitude.toFixed(5)}, Lng ${loc.longitude.toFixed(5)}`
+      )
+      .join("\n");
+  } else {
+    timelineStr = "  - No GPS coordinate logs recorded.";
+  }
+
+  return `INCIDENT SUMMARY (Structured Evidence Report)
+
+Subject: ${evidence.username}
+Trigger Method: ${evidence.triggerLabel}
+Status: Active Evidence Session Captured
+
+EVIDENCE TIMELINE:
+- Total GPS Pings Logged: ${locCount}
+${firstLoc ? `- Session Started: ${new Date(firstLoc.time).toLocaleString()}\n` : ""}${latestLoc ? `- Last Known Location: Lat ${latestLoc.latitude.toFixed(5)}, Lng ${latestLoc.longitude.toFixed(5)} (${new Date(latestLoc.time).toLocaleString()})\n` : ""}- Audio Recording Segments: ${evidence.audioCount} captured
+
+RECENT RECOVERY COORDINATES:
+${timelineStr}
+
+SUMMARY STATEMENT:
+An emergency signal was initiated by ${evidence.username} via ${evidence.triggerLabel}. Evidence logging was executed automatically. The recorded location telemetry and audio recordings remain timestamped and stored securely for emergency contact verification.`;
+}
+
 export async function generateIncidentReport(evidence: {
   username: string;
   triggerLabel: string;
   locations: { latitude: number; longitude: number; time: string }[];
   audioCount: number;
-}): Promise<string | null> {
+}): Promise<string> {
   const ai = getAiClient();
-  if (!ai) return null;
+  if (ai) {
+    const modelsToTry = ["gemini-2.0-flash", "gemini-1.5-flash"];
+    const locSummary = evidence.locations
+      .slice(-10)
+      .map(
+        (location, index) =>
+          `  ${index + 1}. ${location.latitude.toFixed(5)}, ${location.longitude.toFixed(5)} at ${location.time}`
+      )
+      .join("\n");
 
-  try {
-    const locSummary = evidence.locations.slice(-10).map((location, index) => `  ${index + 1}. ${location.latitude.toFixed(5)}, ${location.longitude.toFixed(5)} at ${location.time}`).join("\n");
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: `Write a plain-English incident summary for trusted contacts and optionally law enforcement.
+    const prompt = `Write a plain-English incident summary for trusted contacts and optionally law enforcement.
 Person: ${evidence.username}
 Trigger: ${evidence.triggerLabel}
 GPS points captured: ${evidence.locations.length}
@@ -69,13 +113,23 @@ Recent locations:
 ${locSummary || "  None recorded"}
 
 Rules: be factual, no speculation, no legal advice. Include timeline, location pattern, and evidence available.
-Start with "INCIDENT SUMMARY" as heading. Under 300 words.`,
-    });
-    return response.text?.trim() || null;
-  } catch (error) {
-    console.error("[AI] Incident report failed:", error);
-    return null;
+Start with "INCIDENT SUMMARY" as heading. Under 300 words.`;
+
+    for (const model of modelsToTry) {
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: prompt,
+        });
+        const text = response.text?.trim();
+        if (text) return text;
+      } catch (error) {
+        console.warn(`[AI] Incident report failed with model ${model}:`, error);
+      }
+    }
   }
+
+  return buildLocalIncidentReport(evidence);
 }
 
 export async function evaluateAiSignals(signals: { type: string; confidence: number }[]): Promise<{ suggestCountdown: boolean; reason: string; }> {
@@ -91,18 +145,22 @@ export async function evaluateAiSignals(signals: { type: string; confidence: num
     return { suggestCountdown: true, reason: "Multi-signal agreement (local conservative rules)" };
   }
 
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: `You are a safety assistant. Signals detected: ${JSON.stringify(signals)}.
+  const modelsToTry = ["gemini-2.0-flash", "gemini-1.5-flash"];
+  for (const model of modelsToTry) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: `You are a safety assistant. Signals detected: ${JSON.stringify(signals)}.
 Should a CONFIRMATION countdown start (NOT auto-SOS)? Reply JSON only: {"suggestCountdown": boolean, "reason": "short string"}
 Be conservative and prefer false negatives. Never recommend auto-firing SOS.`,
-    });
-    const text = response.text?.trim() || "";
-    const match = text.match(/\{[\s\S]*\}/);
-    if (match) return JSON.parse(match[0]);
-  } catch {
-    // fall through
+      });
+      const text = response.text?.trim() || "";
+      const match = text.match(/\{[\s\S]*\}/);
+      if (match) return JSON.parse(match[0]);
+    } catch {
+      // fall through
+    }
   }
   return { suggestCountdown: true, reason: "Multi-signal agreement" };
 }
+

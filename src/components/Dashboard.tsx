@@ -65,7 +65,7 @@ export default function Dashboard({
     }, 3500);
   };
 
-  useEffect(() => { void Promise.all([fetchNotes(), fetchContacts(), fetchAlertStatus()]); }, [user.id]);
+  useEffect(() => { void Promise.all([fetchNotes(), fetchContacts(), fetchAlertStatus(), fetchLogs()]); }, [user.id]);
   useEffect(() => {
     if (activeTab !== "logs") return;
     void fetchLogs();
@@ -130,11 +130,21 @@ export default function Dashboard({
   };
 
   const generateIncidentReport = async () => {
-    if (!latestShare?.share_token) return;
     setReportLoading(true);
-    const data = await apiJson<{ report: string }>(`/api/ai/incident-report/${latestShare.share_token}`).catch((error) => ({ report: error instanceof Error ? error.message : "Failed" }));
-    setReport(data.report); setReportLoading(false);
-    addToast("Factual incident summary generated!", "success");
+    const tokenParam = latestShare?.share_token || "latest";
+    try {
+      const data = await apiJson<{ report: string }>(`/api/ai/incident-report/${tokenParam}`);
+      if (data?.report) {
+        setReport(data.report);
+        addToast("Factual incident summary generated!", "success");
+      } else {
+        addToast("Unable to generate incident report", "error");
+      }
+    } catch (error) {
+      addToast(error instanceof Error ? error.message : "Failed to generate report", "error");
+    } finally {
+      setReportLoading(false);
+    }
   };
 
   const getNoteCategory = (title: string, index: number) => {
@@ -670,7 +680,7 @@ export default function Dashboard({
                           <p className="text-xs uppercase tracking-widest text-zinc-400 font-bold">AI Report</p>
                           <h3 className="text-xl font-bold text-zinc-900 mt-1">Incident Summary Draft</h3>
                         </div>
-                        <button onClick={generateIncidentReport} disabled={!latestShare?.share_token || reportLoading} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs disabled:opacity-50 transition-all shadow-sm">
+                        <button onClick={generateIncidentReport} disabled={reportLoading} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs disabled:opacity-50 transition-all shadow-sm">
                           <Sparkles size={16} />
                           {reportLoading ? "Generating..." : "Generate"}
                         </button>
