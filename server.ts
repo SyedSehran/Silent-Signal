@@ -14,6 +14,7 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import "dotenv/config";
 import { seedUserNotes } from "./server/notes.ts";
 import { evaluateAiSignals, generateIncidentReport } from "./server/ai.ts";
+import { fetchVerifiedSafeHavens } from "./server/nearbyHavens.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1182,6 +1183,28 @@ async function startServer() {
     } catch (err: any) {
       console.error("Incident report error:", err);
       res.status(500).json({ error: "Failed to generate report" });
+    }
+  });
+
+  // ─── Nearby Safe Havens (OpenStreetMap) ────────────────────────────────
+  app.get("/api/nearby-havens", authenticateToken, async (req: Request, res: Response) => {
+    try {
+      const lat = Number(req.query.lat);
+      const lng = Number(req.query.lng);
+      const radius = Math.min(Math.max(Number(req.query.radius) || 5000, 500), 10000);
+
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return res.status(400).json({ error: "Valid lat and lng query params required" });
+      }
+      if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+        return res.status(400).json({ error: "Invalid coordinates" });
+      }
+
+      const places = await fetchVerifiedSafeHavens(lat, lng, radius);
+      res.json({ places, source: "openstreetmap", userLocation: { lat, lng } });
+    } catch (err: any) {
+      console.error("Nearby havens error:", err);
+      res.status(502).json({ error: "Failed to fetch nearby safe havens" });
     }
   });
 
