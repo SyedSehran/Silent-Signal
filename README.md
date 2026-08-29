@@ -23,8 +23,8 @@ The application disguises itself as a normal, realistic **notes workspace** whil
 - **🔐 Stealth Duress PIN**: Special 4-digit PIN opens the decoy notes workspace while silently starting background SOS capture.
 - **🤫 Whispered Safe Word**: Local Web Speech API detection listens for a user-configured safe phrase without sending audio to third parties.
 - **📳 Motion & Wearable Triggers**: Rapid accelerometer shake detection and simulated smartwatch stress/heart-rate spike activation.
-- **🧭 Live Safe Havens**: Finds the exact nearest police, hospital, pharmacy, and petrol stations from live GPS using the OpenStreetMap Overpass API (real distances, no mock data).
-- **⏱️ Safe-Arrival Timer**: Set a destination and time limit; if you don't arrive (auto-detected within ~100 m) or confirm "I'm safe" before it expires, trusted contacts are alerted automatically. Cancelling early sends no alert.
+- **🧭 Live Safe Havens**: Locates the exact nearest police, hospital, pharmacy, and petrol stations from live GPS via the OpenStreetMap Overpass API.
+- **⏱️ Safe-Arrival Timer**: Set a destination and time limit; failing to arrive (auto-detected within ~100 m) or confirm "I'm safe" before expiry auto-alerts trusted contacts.
 - **📍 AES-256 Encrypted Telemetry**: Encrypted GPS coordinate storage (`AES-256-GCM`) with offline batching & reconnect auto-flush.
 - **🎙️ Rolling WebM Audio Evidence**: Automatic 30-second chunked voice recording uploaded to secure storage.
 - **📱 Multi-Channel SOS Dispatch**: Simultaneous Email alerts (Brevo / Resend HTTP API), SMS (Twilio), and direct 1-click WhatsApp deep-links (`wa.me`).
