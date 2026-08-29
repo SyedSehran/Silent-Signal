@@ -206,6 +206,24 @@ export default function App() {
     [isSOSActive, user]
   );
 
+  const headerTapTimestamps = useRef<number[]>([]);
+
+  const handleHeaderClick = useCallback(() => {
+    const now = Date.now();
+    headerTapTimestamps.current.push(now);
+    headerTapTimestamps.current = headerTapTimestamps.current.filter((t) => now - t < 1500);
+
+    if (headerTapTimestamps.current.length >= 3) {
+      headerTapTimestamps.current = [];
+      console.log("[Stealth Gesture] 3-Tap header panic trigger detected!");
+      startConfirmationCountdown(
+        "HEADER_TRIPLE_TAP",
+        "Stealth Header Tap",
+        "Covert 3-tap panic gesture on decoy workspace header"
+      );
+    }
+  }, [startConfirmationCountdown]);
+
   useEffect(() => {
     if (!panicTimerActive || !countdown) return;
 
@@ -552,7 +570,7 @@ export default function App() {
       />
 
       <header className="h-16 border-b border-zinc-200 bg-white/80 backdrop-blur-md px-6 flex items-center justify-between sticky top-0 z-30">
-        <div className="flex items-center gap-3">
+        <div onClick={handleHeaderClick} className="flex items-center gap-3 cursor-pointer select-none" title="QuickNotes Workspace">
           <div className="w-10 h-10 bg-zinc-900 rounded-xl flex items-center justify-center text-white shadow-lg shadow-zinc-900/10">
             <StickyNote size={20} />
           </div>

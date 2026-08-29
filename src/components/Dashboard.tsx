@@ -1,8 +1,10 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Contact, Note, SosLog, User } from "../types";
-import { Plus, Search, Trash2, Shield, Settings as SettingsIcon, StickyNote, AlertCircle, History, MapPin, Mic, Menu, ChevronRight, Clock, CheckCircle2, RefreshCw, Copy, Sparkles, Wifi, WifiOff, Watch, Heart, Check, Info, Radio, Zap, Volume2, Key, Activity, MessageCircle } from "lucide-react";
+import { Plus, Search, Trash2, Shield, Settings as SettingsIcon, StickyNote, AlertCircle, History, MapPin, Mic, Menu, ChevronRight, Clock, CheckCircle2, RefreshCw, Copy, Sparkles, Wifi, WifiOff, Watch, Heart, Check, Info, Radio, Zap, Volume2, Key, Activity, MessageCircle, Navigation, Compass, PhoneCall } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { apiJson } from "../lib/api";
+import SafeHavenMap from "./SafeHavenMap";
+import FakeCallModal from "./FakeCallModal";
 
 interface DashboardProps {
   user: User;
@@ -36,12 +38,13 @@ export default function Dashboard({
   micError,
   watchConnected,
   onConnectWatch,
-  onSimulateWatchStress
+  onSimulateWatchStress,
 }: DashboardProps) {
   const [notes, setNotes] = useState<Note[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [sosLogs, setSosLogs] = useState<SosLog[]>([]);
-  const [activeTab, setActiveTab] = useState<"notes" | "settings" | "logs">("notes");
+  const [activeTab, setActiveTab] = useState<"notes" | "safehavens" | "settings" | "logs">("notes");
+  const [showFakeCall, setShowFakeCall] = useState(false);
   const [newNoteTitle, setNewNoteTitle] = useState("");
   const [newNoteContent, setNewNoteContent] = useState("");
   const [newContactName, setNewContactName] = useState("");
@@ -193,6 +196,7 @@ export default function Dashboard({
         </div>
         <nav className="flex-1 px-3 space-y-1.5">
           <SidebarItem icon={<StickyNote size={20} />} label="All Notes" active={activeTab === "notes"} onClick={() => setActiveTab("notes")} isOpen={isSidebarOpen} />
+          <SidebarItem icon={<Compass size={20} />} label="Safe Havens" active={activeTab === "safehavens"} onClick={() => setActiveTab("safehavens")} isOpen={isSidebarOpen} />
           <SidebarItem icon={<SettingsIcon size={20} />} label="Vault Settings" active={activeTab === "settings"} onClick={() => setActiveTab("settings")} isOpen={isSidebarOpen} />
           <SidebarItem icon={<History size={20} />} label="Security Logs" active={activeTab === "logs"} onClick={() => setActiveTab("logs")} isOpen={isSidebarOpen} count={sosLogs.length || undefined} />
         </nav>
@@ -214,12 +218,23 @@ export default function Dashboard({
 
       {/* Main Workspace Content */}
       <main className="flex-1 overflow-y-auto relative">
-        {isSOSActive && (
-          <div className="absolute top-4 right-4 z-30 flex items-center gap-2 px-3.5 py-1.5 bg-emerald-500/10 border border-emerald-500/30 rounded-full shadow-sm backdrop-blur-md">
-            <RefreshCw size={12} className="text-emerald-600 animate-spin" />
-            <span className="text-[11px] font-bold text-emerald-700 uppercase tracking-widest">{isOnline ? "Auto-saving notes" : "Saved locally"}</span>
-          </div>
-        )}
+        <div className="absolute top-4 right-4 z-30 flex items-center gap-2">
+          {activeTab === "safehavens" && (
+            <button
+              onClick={() => setShowFakeCall(true)}
+              className="px-3.5 py-1.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-full text-[11px] font-bold tracking-wider flex items-center gap-1.5 shadow-md transition-all active:scale-95 border border-zinc-800"
+              title="Trigger believable incoming phone call distraction"
+            >
+              <PhoneCall size={13} className="text-emerald-400 animate-pulse" /> Fake Call
+            </button>
+          )}
+          {isSOSActive && (
+            <div className="flex items-center gap-2 px-3.5 py-1.5 bg-emerald-500/10 border border-emerald-500/30 rounded-full shadow-sm backdrop-blur-md">
+              <RefreshCw size={12} className="text-emerald-600 animate-spin" />
+              <span className="text-[11px] font-bold text-emerald-700 uppercase tracking-widest">{isOnline ? "Auto-saving notes" : "Saved locally"}</span>
+            </div>
+          )}
+        </div>
 
         <div className="max-w-6xl mx-auto p-8">
           <AnimatePresence mode="wait">
@@ -244,30 +259,30 @@ export default function Dashboard({
                 </div>
 
                 <div className="grid grid-cols-1 xl:grid-cols-[1.4fr,0.8fr] gap-6">
-                  <form onSubmit={addNote} className="bg-white rounded-[24px] border border-zinc-200 shadow-sm hover:shadow-md transition-all overflow-hidden">
-                    <div className="p-6 space-y-4">
+                  <form onSubmit={addNote} className="glass-card rounded-[28px] border border-zinc-200/90 shadow-sm hover-lift overflow-hidden">
+                    <div className="p-6 space-y-3">
                       <input 
                         type="text" 
                         value={newNoteTitle} 
                         onChange={(e) => setNewNoteTitle(e.target.value)} 
                         placeholder="Wednesday errand list" 
-                        className="w-full text-2xl font-serif font-bold bg-transparent border-none outline-none placeholder:text-zinc-300 text-zinc-900" 
+                        className="w-full text-2xl font-serif font-bold bg-transparent border-none outline-none placeholder:text-zinc-400 text-zinc-900 tracking-tight" 
                       />
                       <textarea 
                         value={newNoteContent} 
                         onChange={(e) => setNewNoteContent(e.target.value)} 
                         placeholder="Pick up dry cleaning at 6, confirm dinner reservation, send revised slide deck." 
-                        className="w-full min-h-[140px] bg-transparent border-none outline-none resize-none placeholder:text-zinc-300 text-zinc-600 leading-relaxed text-sm" 
+                        className="w-full min-h-[100px] bg-transparent border-none outline-none resize-none placeholder:text-zinc-400 text-zinc-600 leading-relaxed text-sm" 
                       />
                     </div>
-                    <div className="px-6 py-4 bg-zinc-50 border-t border-zinc-100 flex justify-between items-center">
+                    <div className="px-6 py-3.5 bg-zinc-50/80 border-t border-zinc-100 flex justify-between items-center">
                       <div className="flex gap-2">
-                        <div className="w-2.5 h-2.5 rounded-full bg-rose-300" />
-                        <div className="w-2.5 h-2.5 rounded-full bg-amber-300" />
-                        <div className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
+                        <div className="w-2.5 h-2.5 rounded-full bg-rose-400" />
+                        <div className="w-2.5 h-2.5 rounded-full bg-amber-400" />
+                        <div className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
                       </div>
-                      <button type="submit" disabled={loading} className="bg-zinc-900 text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-zinc-800 transition-all flex items-center gap-2 disabled:opacity-50 shadow-sm active:scale-95">
-                        <Plus size={18} />Save Note
+                      <button type="submit" disabled={loading} className="bg-zinc-900 text-white px-5 py-2.5 rounded-xl font-bold text-xs hover:bg-zinc-800 transition-all flex items-center gap-1.5 disabled:opacity-50 shadow-xs active:scale-95">
+                        <Plus size={16} />Save Note
                       </button>
                     </div>
                   </form>
@@ -327,6 +342,13 @@ export default function Dashboard({
                     );
                   })}
                 </div>
+              </motion.div>
+            )}
+
+            {/* Safe Haven Radar Tab */}
+            {activeTab === "safehavens" && (
+              <motion.div key="safehavens" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+                <SafeHavenMap latestLocation={latestLocation} onTriggerFakeCall={() => setShowFakeCall(true)} />
               </motion.div>
             )}
 
@@ -412,19 +434,25 @@ export default function Dashboard({
                             <p className="text-xs text-zinc-500 mt-0.5">{contact.phone}{contact.email ? ` • ${contact.email}` : ""}</p>
                           </div>
                           <div className="flex items-center gap-2">
-                            <a
-                              href={`https://wa.me/${contact.phone.replace(/\D/g, "")}?text=${encodeURIComponent(
+                            {(() => {
+                              const cleanPhone = contact.phone.replace(/[^0-9]/g, "");
+                              const waText = encodeURIComponent(
                                 `🚨 EMERGENCY ALERT — ${user.username} has set you as a trusted emergency contact on Silent Signal.\n\n` +
                                 `In an emergency, live location and recorded evidence links will be shared with you automatically.\n` +
                                 (latestLocation ? `📍 Current Location: https://maps.google.com/?q=${latestLocation.lat},${latestLocation.lng}` : "")
-                              )}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="px-2.5 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-xl transition-all flex items-center gap-1.5 text-xs font-bold border border-emerald-200 shadow-sm"
-                              title="Send WhatsApp emergency link"
-                            >
-                              <MessageCircle size={14} /> WhatsApp
-                            </a>
+                              );
+                              return (
+                                <a
+                                  href={`https://wa.me/${cleanPhone}?text=${waText}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="px-2.5 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-xl transition-all flex items-center gap-1.5 text-xs font-bold border border-emerald-200 shadow-sm"
+                                  title="Send WhatsApp emergency link"
+                                >
+                                  <MessageCircle size={14} /> WhatsApp
+                                </a>
+                              );
+                            })()}
                             <button onClick={() => deleteContact(contact.id)} className="p-2 text-zinc-300 hover:text-red-500 transition-colors">
                               <Trash2 size={18} />
                             </button>
@@ -613,7 +641,7 @@ export default function Dashboard({
                                 </div>
                                 {log.trigger_method && (
                                   <span className="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider bg-zinc-100 text-zinc-600 border border-zinc-200">
-                                    {log.trigger_method.replace(/_/g, " ")}
+                                    {log.trigger_method.replaceAll("_", " ")}
                                   </span>
                                 )}
                               </div>
@@ -647,29 +675,33 @@ export default function Dashboard({
                           <h3 className="text-xl font-bold text-zinc-900 mt-1">Auto-expiring Evidence</h3>
                         </div>
                         <div className="flex items-center gap-2">
-                          {latestShare?.share_token && (
-                            <a
-                              href={`https://wa.me/?text=${encodeURIComponent(
-                                `🚨 EMERGENCY ALERT — SILENT SIGNAL\n\n` +
-                                `${user.username} triggered a silent emergency alert.\n\n` +
-                                `🎙️ Access Live Evidence & Audio: ${window.location.origin}/evidence/${latestShare.share_token}\n\n` +
-                                `Please check on them or contact emergency services immediately.`
-                              )}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="px-3 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all"
-                              title="Share evidence directly via WhatsApp"
-                            >
-                              <MessageCircle size={16} /> WhatsApp
-                            </a>
-                          )}
+                          {latestShare?.share_token && (() => {
+                            const shareUrl = window.location.origin + "/evidence/" + latestShare.share_token;
+                            const waUrl = "https://wa.me/?text=" + encodeURIComponent(
+                              "🚨 EMERGENCY ALERT — SILENT SIGNAL\n\n" +
+                              user.username + " triggered a silent emergency alert.\n\n" +
+                              "🎙️ Access Live Evidence & Audio: " + shareUrl + "\n\n" +
+                              "Please check on them or contact emergency services immediately."
+                            );
+                            return (
+                              <a
+                                href={waUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="px-3 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all"
+                                title="Share evidence directly via WhatsApp"
+                              >
+                                <MessageCircle size={16} /> WhatsApp
+                              </a>
+                            );
+                          })()}
                           <button onClick={copyEvidenceLink} disabled={!latestShare?.share_token} className="p-3 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-white disabled:bg-zinc-200 transition-colors shadow-sm">
                             <Copy size={16} />
                           </button>
                         </div>
                       </div>
                       <div className="rounded-2xl bg-zinc-50 border border-zinc-200/80 px-4 py-3 text-sm font-mono text-zinc-600 break-all select-all">
-                        {latestShare?.share_token ? `${window.location.origin}/evidence/${latestShare.share_token}` : "No active evidence session yet."}
+                        {latestShare?.share_token ? window.location.origin + "/evidence/" + latestShare.share_token : "No active evidence session yet."}
                       </div>
                       {latestShare?.share_expires_at && <p className="text-xs text-zinc-500">Expires {new Date(latestShare.share_expires_at).toLocaleString()}</p>}
                     </div>
@@ -696,6 +728,17 @@ export default function Dashboard({
           </AnimatePresence>
         </div>
       </main>
+
+      {/* Fake Call Audio Distraction Modal */}
+      <FakeCallModal
+        isOpen={showFakeCall}
+        onClose={() => setShowFakeCall(false)}
+        onEscalateSOS={() => {
+          setShowFakeCall(false);
+          setShowStopConfirm(false);
+          addToast("Covert SOS Triggered from Fake Call!", "error");
+        }}
+      />
     </div>
   );
 }
