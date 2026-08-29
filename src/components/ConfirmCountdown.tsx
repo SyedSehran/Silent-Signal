@@ -44,7 +44,7 @@ export default function ConfirmCountdown({
                 {Math.round(progress)}%
               </span>
             </div>
-            <div className="mt-3.5 h-1.5 bg-zinc-100 rounded-full overflow-hidden border border-zinc-200/50">
+            <div className="mt-3 h-1.5 bg-zinc-100 rounded-full overflow-hidden border border-zinc-200/50">
               <div
                 className="h-full bg-emerald-500 rounded-full transition-all duration-1000 shadow-xs"
                 style={{ width: `${progress}%` }}

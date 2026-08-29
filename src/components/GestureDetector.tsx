@@ -1,4 +1,4 @@
-import React, { useRef, useCallback } from "react";
+import React, { useRef, useCallback, useEffect } from "react";
 
 interface GestureDetectorProps {
   onTrigger: () => void;
@@ -16,6 +16,13 @@ export default function GestureDetector({ onTrigger }: GestureDetectorProps) {
   const drawingRef = useRef(false);
   const tapCountRef = useRef(0);
   const tapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clear any pending tap timer on unmount so onTrigger can't fire late.
+  useEffect(() => {
+    return () => {
+      if (tapTimerRef.current) clearTimeout(tapTimerRef.current);
+    };
+  }, []);
 
   // ── Triple Tap (top-left area) ─────────────────────────
   const handleTap = useCallback(

@@ -25,6 +25,7 @@ export function useSafeWordDetection({ safeWord, onDetected, enabled = false }: 
 
     let isStarted = false;
     let shouldRun = true;
+    let restartTimer: ReturnType<typeof setTimeout> | null = null;
 
     const startSpeech = () => {
       if (!shouldRun || isStarted) return;
@@ -80,7 +81,7 @@ export function useSafeWordDetection({ safeWord, onDetected, enabled = false }: 
       isStarted = false;
       if (shouldRun) {
         // Delay restart to avoid infinite rapid loops on error
-        setTimeout(() => {
+        restartTimer = setTimeout(() => {
           startSpeech();
         }, 400);
       }
@@ -95,6 +96,7 @@ export function useSafeWordDetection({ safeWord, onDetected, enabled = false }: 
 
     return () => {
       shouldRun = false;
+      if (restartTimer) clearTimeout(restartTimer);
       try {
         recognition.stop();
       } catch {

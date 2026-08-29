@@ -1,10 +1,10 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Contact, Note, SosLog, User } from "../types";
-import { Plus, Search, Trash2, Shield, Settings as SettingsIcon, StickyNote, AlertCircle, History, MapPin, Mic, Menu, ChevronRight, Clock, CheckCircle2, RefreshCw, Copy, Sparkles, Wifi, WifiOff, Watch, Heart, Check, Info, Radio, Zap, Volume2, Key, Activity, MessageCircle, Navigation, Compass, PhoneCall } from "lucide-react";
+import { Plus, Search, Trash2, Shield, Settings as SettingsIcon, StickyNote, AlertCircle, History, MapPin, Mic, Menu, ChevronRight, Clock, CheckCircle2, RefreshCw, Copy, Sparkles, Wifi, WifiOff, Watch, Heart, Check, Info, Radio, Zap, Volume2, Key, MessageCircle, Navigation, Compass } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { apiJson } from "../lib/api";
 import SafeHavenMap from "./SafeHavenMap";
-import FakeCallModal from "./FakeCallModal";
+import JourneyGuard from "./JourneyGuard";
 
 interface DashboardProps {
   user: User;
@@ -20,6 +20,7 @@ interface DashboardProps {
   watchConnected: "NONE" | "APPLE" | "SAMSUNG";
   onConnectWatch: (type: "NONE" | "APPLE" | "SAMSUNG") => void;
   onSimulateWatchStress: () => void;
+  onJourneyTimeout: () => void;
 }
 
 interface AlertStatus { sms: boolean; email: boolean; }
@@ -39,12 +40,12 @@ export default function Dashboard({
   watchConnected,
   onConnectWatch,
   onSimulateWatchStress,
+  onJourneyTimeout,
 }: DashboardProps) {
   const [notes, setNotes] = useState<Note[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [sosLogs, setSosLogs] = useState<SosLog[]>([]);
-  const [activeTab, setActiveTab] = useState<"notes" | "safehavens" | "settings" | "logs">("notes");
-  const [showFakeCall, setShowFakeCall] = useState(false);
+  const [activeTab, setActiveTab] = useState<"notes" | "safehavens" | "journey" | "settings" | "logs">("notes");
   const [newNoteTitle, setNewNoteTitle] = useState("");
   const [newNoteContent, setNewNoteContent] = useState("");
   const [newContactName, setNewContactName] = useState("");
@@ -59,13 +60,22 @@ export default function Dashboard({
   const [report, setReport] = useState("");
   const [reportLoading, setReportLoading] = useState(false);
   const [toasts, setToasts] = useState<ToastNotice[]>([]);
+  const toastTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  useEffect(() => {
+    return () => {
+      toastTimersRef.current.forEach((t) => clearTimeout(t));
+      toastTimersRef.current = [];
+    };
+  }, []);
 
   const addToast = (message: string, type: "success" | "error" | "info" = "success") => {
     const id = Date.now();
     setToasts((prev) => [...prev, { message, type, id }]);
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 3500);
+    toastTimersRef.current.push(timer);
   };
 
   useEffect(() => { void Promise.all([fetchNotes(), fetchContacts(), fetchAlertStatus(), fetchLogs()]); }, [user.id]);
@@ -190,19 +200,20 @@ export default function Dashboard({
 
       {/* Sidebar */}
       <motion.aside initial={false} animate={{ width: isSidebarOpen ? 280 : 80 }} className="bg-white border-r border-zinc-200 flex flex-col z-20 shadow-sm">
-        <div className="p-4 flex items-center justify-between">
+        <div className="px-4 py-4 flex items-center justify-between">
           {isSidebarOpen && <span className="font-bold text-zinc-400 text-[10px] uppercase tracking-widest">Workspace</span>}
           <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-2 hover:bg-zinc-100 rounded-xl text-zinc-500 transition-colors">{isSidebarOpen ? <Menu size={20} /> : <ChevronRight size={20} />}</button>
         </div>
-        <nav className="flex-1 px-3 space-y-1.5">
+        <nav className="flex-1 px-4 space-y-1.5">
           <SidebarItem icon={<StickyNote size={20} />} label="All Notes" active={activeTab === "notes"} onClick={() => setActiveTab("notes")} isOpen={isSidebarOpen} />
           <SidebarItem icon={<Compass size={20} />} label="Safe Havens" active={activeTab === "safehavens"} onClick={() => setActiveTab("safehavens")} isOpen={isSidebarOpen} />
+          <SidebarItem icon={<Navigation size={20} />} label="Safe Arrival" active={activeTab === "journey"} onClick={() => setActiveTab("journey")} isOpen={isSidebarOpen} />
           <SidebarItem icon={<SettingsIcon size={20} />} label="Vault Settings" active={activeTab === "settings"} onClick={() => setActiveTab("settings")} isOpen={isSidebarOpen} />
           <SidebarItem icon={<History size={20} />} label="Security Logs" active={activeTab === "logs"} onClick={() => setActiveTab("logs")} isOpen={isSidebarOpen} count={sosLogs.length || undefined} />
         </nav>
-        <div className="p-4 border-t border-zinc-100">
+        <div className="px-4 py-4 border-t border-zinc-100">
           <div className={`flex items-center gap-3 ${isSidebarOpen ? "" : "justify-center"}`}>
-            <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 flex items-center justify-center font-bold text-xs shadow-sm">{user.username[0].toUpperCase()}</div>
+            <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 flex items-center justify-center font-bold text-xs shadow-sm">{user.username?.[0]?.toUpperCase() ?? "?"}</div>
             {isSidebarOpen && (
               <div>
                 <p className="text-sm font-bold text-zinc-900">{user.username}</p>
@@ -219,15 +230,6 @@ export default function Dashboard({
       {/* Main Workspace Content */}
       <main className="flex-1 overflow-y-auto relative">
         <div className="absolute top-4 right-4 z-30 flex items-center gap-2">
-          {activeTab === "safehavens" && (
-            <button
-              onClick={() => setShowFakeCall(true)}
-              className="px-3.5 py-1.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-full text-[11px] font-bold tracking-wider flex items-center gap-1.5 shadow-md transition-all active:scale-95 border border-zinc-800"
-              title="Trigger believable incoming phone call distraction"
-            >
-              <PhoneCall size={13} className="text-emerald-400 animate-pulse" /> Fake Call
-            </button>
-          )}
           {isSOSActive && (
             <div className="flex items-center gap-2 px-3.5 py-1.5 bg-emerald-500/10 border border-emerald-500/30 rounded-full shadow-sm backdrop-blur-md">
               <RefreshCw size={12} className="text-emerald-600 animate-spin" />
@@ -258,8 +260,8 @@ export default function Dashboard({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 xl:grid-cols-[1.4fr,0.8fr] gap-6">
-                  <form onSubmit={addNote} className="glass-card rounded-[28px] border border-zinc-200/90 shadow-sm hover-lift overflow-hidden">
+                <div className="grid grid-cols-1 xl:grid-cols-[1.4fr_0.8fr] gap-6">
+                  <form onSubmit={addNote} className="glass-card rounded-[24px] border border-zinc-200/90 shadow-sm hover-lift overflow-hidden">
                     <div className="p-6 space-y-3">
                       <input 
                         type="text" 
@@ -329,7 +331,7 @@ export default function Dashboard({
                             </button>
                           </div>
                           <h3 className="font-serif font-bold text-lg text-zinc-900 mb-2">{note.title}</h3>
-                          <p className="text-zinc-500 text-sm line-clamp-4 leading-relaxed mb-6">{note.content}</p>
+                          <p className="text-zinc-500 text-sm line-clamp-4 leading-relaxed mb-4">{note.content}</p>
                         </div>
                         <div className="flex items-center justify-between pt-4 border-t border-zinc-100">
                           <div className="flex items-center gap-1.5 text-[10px] font-bold text-zinc-400 uppercase tracking-widest">
@@ -348,7 +350,14 @@ export default function Dashboard({
             {/* Safe Haven Radar Tab */}
             {activeTab === "safehavens" && (
               <motion.div key="safehavens" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
-                <SafeHavenMap latestLocation={latestLocation} onTriggerFakeCall={() => setShowFakeCall(true)} />
+                <SafeHavenMap latestLocation={latestLocation} />
+              </motion.div>
+            )}
+
+            {/* Safe Arrival Journey Timer Tab */}
+            {activeTab === "journey" && (
+              <motion.div key="journey" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+                <JourneyGuard latestLocation={latestLocation} onJourneyTimeout={onJourneyTimeout} />
               </motion.div>
             )}
 
@@ -476,7 +485,7 @@ export default function Dashboard({
                           <p className="font-bold text-zinc-900 text-sm">Precision-first AI suggestions</p>
                           <p className="text-xs text-zinc-500 mt-0.5">Only suggests countdowns after multiple signals agree. Never auto-fires SOS.</p>
                         </div>
-                        <button type="button" onClick={() => onAiEnabledChange(!aiEnabled)} className={`w-14 h-8 rounded-full transition-colors ${aiEnabled ? "bg-emerald-500" : "bg-zinc-300"}`}>
+                        <button type="button" role="switch" aria-checked={aiEnabled} aria-label="Precision-first AI suggestions" onClick={() => onAiEnabledChange(!aiEnabled)} className={`w-14 h-8 rounded-full transition-colors ${aiEnabled ? "bg-emerald-500" : "bg-zinc-300"}`}>
                           <span className={`block w-6 h-6 bg-white rounded-full transition-transform ${aiEnabled ? "translate-x-7" : "translate-x-1"}`} />
                         </button>
                       </label>
@@ -608,7 +617,7 @@ export default function Dashboard({
                   )}
                 </AnimatePresence>
 
-                <div className="grid grid-cols-1 xl:grid-cols-[1.2fr,0.8fr] gap-6">
+                <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr] gap-6">
                   <div className="space-y-4">
                     {sosLogs.length === 0 ? (
                       <div className="bg-white p-20 rounded-[32px] border border-zinc-200 text-center space-y-4 shadow-sm">
@@ -728,17 +737,6 @@ export default function Dashboard({
           </AnimatePresence>
         </div>
       </main>
-
-      {/* Fake Call Audio Distraction Modal */}
-      <FakeCallModal
-        isOpen={showFakeCall}
-        onClose={() => setShowFakeCall(false)}
-        onEscalateSOS={() => {
-          setShowFakeCall(false);
-          setShowStopConfirm(false);
-          addToast("Covert SOS Triggered from Fake Call!", "error");
-        }}
-      />
     </div>
   );
 }

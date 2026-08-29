@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
-import { MapPin, Navigation, Shield, Phone, ExternalLink, Compass, Fuel, Building2, Cross, CheckCircle2, RefreshCw, PhoneCall, AlertTriangle } from "lucide-react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { MapPin, Navigation, Shield, Phone, ExternalLink, Compass, Fuel, Building2, Cross, CheckCircle2, RefreshCw, AlertTriangle } from "lucide-react";
 import { motion } from "motion/react";
 
 interface Location {
@@ -10,86 +10,45 @@ interface Location {
 interface SafeHavenProps {
   latestLocation: Location | null;
   onStartEnRouteTracking?: () => void;
-  onTriggerFakeCall?: () => void;
 }
 
 type HavenCategory = "ALL" | "POLICE" | "PHARMACY" | "PETROL" | "HOSPITAL";
+type PlaceCategory = Exclude<HavenCategory, "ALL">;
+type HavenStatus = "IDLE" | "LOADING" | "READY" | "EMPTY" | "ERROR";
 
-interface SafeHavenPlace {
+// A real place resolved from OpenStreetMap (no distance yet — distance is
+// computed live against the user's current coordinates).
+interface RawPlace {
   id: string;
   name: string;
-  category: Exclude<HavenCategory, "ALL">;
+  category: PlaceCategory;
   address: string;
   phone: string;
-  offsetLat: number;
-  offsetLng: number;
-  displayDistanceMeters: number;
+  lat: number;
+  lng: number;
   is24x7: boolean;
   notes: string;
 }
 
-const BASE_HAVENS: SafeHavenPlace[] = [
-  {
-    id: "p1",
-    name: "24/7 Police Patrol & Emergency Booth",
-    category: "POLICE",
-    address: "Nearest Public Security Gate & Booth",
-    phone: "112",
-    offsetLat: 0.00155,
-    offsetLng: 0.00105,
-    displayDistanceMeters: 195,
-    is24x7: true,
-    notes: "Lit 24/7 armed police presence with CCTV coverage",
-  },
-  {
-    id: "p2",
-    name: "Transit Police Security Post",
-    category: "POLICE",
-    address: "Nearby Metro / Rail Station Gate 1",
-    phone: "112",
-    offsetLat: -0.00275,
-    offsetLng: 0.00195,
-    displayDistanceMeters: 340,
-    is24x7: true,
-    notes: "Illuminated security desk & female officer desk",
-  },
-  {
-    id: "ph1",
-    name: "24/7 Apollo Emergency Chemist",
-    category: "PHARMACY",
-    address: "Commercial Center, Main Road",
-    phone: "+18002550199",
-    offsetLat: 0.00385,
-    offsetLng: -0.00255,
-    displayDistanceMeters: 480,
-    is24x7: true,
-    notes: "24/7 open pharmacy with security guard outside",
-  },
-  {
-    id: "fuel1",
-    name: "IndianOil 24/7 Fuel & Express Store",
-    category: "PETROL",
-    address: "Main Traffic Junction",
-    phone: "+18002550144",
-    offsetLat: 0.00525,
-    offsetLng: -0.00205,
-    displayDistanceMeters: 650,
-    is24x7: true,
-    notes: "High-footfall 24/7 convenience market & CCTV",
-  },
-  {
-    id: "h1",
-    name: "City Hospital - 24/7 Emergency ER",
-    category: "HOSPITAL",
-    address: "Hospital Emergency Entrance",
-    phone: "102",
-    offsetLat: 0.00655,
-    offsetLng: 0.00385,
-    displayDistanceMeters: 795,
-    is24x7: true,
-    notes: "24/7 ER reception desk with security personnel",
-  },
+// Free, key-less OpenStreetMap Overpass endpoints (CORS-enabled). We try them
+// in order so a single mirror being down doesn't break the feature.
+const OVERPASS_ENDPOINTS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ];
+
+// How far out to look for real facilities (metres). Expanded automatically if
+// the initial radius returns nothing.
+const BASE_SEARCH_RADIUS = 3000;
+const MAX_SEARCH_RADIUS = 15000;
+
+const CATEGORY_META: Record<PlaceCategory, { osmAmenity: string; emergencyPhone: string; label: string }> = {
+  POLICE: { osmAmenity: "police", emergencyPhone: "112", label: "Police Station" },
+  PHARMACY: { osmAmenity: "pharmacy", emergencyPhone: "112", label: "Pharmacy" },
+  PETROL: { osmAmenity: "fuel", emergencyPhone: "112", label: "Petrol Pump" },
+  HOSPITAL: { osmAmenity: "hospital", emergencyPhone: "102", label: "Hospital" },
+};
 
 const GPS_OPTIONS: PositionOptions = {
   enableHighAccuracy: true,
@@ -116,7 +75,105 @@ function haversineMeters(a: Location, b: Location): number {
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
-export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, onTriggerFakeCall }: SafeHavenProps) {
+function amenityToCategory(amenity?: string): PlaceCategory | null {
+  switch (amenity) {
+    case "police":
+      return "POLICE";
+    case "pharmacy":
+      return "PHARMACY";
+    case "fuel":
+      return "PETROL";
+    case "hospital":
+      return "HOSPITAL";
+    default:
+      return null;
+  }
+}
+
+type OverpassTags = Record<string, string>;
+interface OverpassElement {
+  type: string;
+  id: number;
+  lat?: number;
+  lon?: number;
+  center?: { lat: number; lon: number };
+  tags?: OverpassTags;
+}
+
+function buildAddress(tags: OverpassTags): string {
+  const parts = [
+    tags["addr:housenumber"],
+    tags["addr:street"],
+    tags["addr:suburb"] || tags["addr:neighbourhood"],
+    tags["addr:city"] || tags["addr:town"] || tags["addr:village"],
+  ].filter(Boolean);
+  if (parts.length) return parts.join(", ");
+  if (tags["addr:full"]) return tags["addr:full"];
+  return "Address unlisted in OSM — use directions to navigate";
+}
+
+function buildNotes(category: PlaceCategory, tags: OverpassTags, is24x7: boolean): string {
+  const openText = is24x7
+    ? "Open 24/7"
+    : tags.opening_hours
+    ? `Hours: ${tags.opening_hours}`
+    : "Verify opening hours before heading out";
+  switch (category) {
+    case "POLICE":
+      return `${openText}. Staffed police facility — report to the duty officer.`;
+    case "PHARMACY":
+      return `${openText}. Well-lit, public chemist — safe to wait inside.`;
+    case "PETROL":
+      return `${openText}. Fuel station usually has attendants & CCTV.`;
+    case "HOSPITAL":
+      return `${openText}. Hospital with reception/security available.`;
+    default:
+      return openText;
+  }
+}
+
+function buildOverpassQuery(loc: Location, radius: number): string {
+  const parts = Object.values(CATEGORY_META)
+    .map(
+      (m) =>
+        `node["amenity"="${m.osmAmenity}"](around:${radius},${loc.lat},${loc.lng});` +
+        `way["amenity"="${m.osmAmenity}"](around:${radius},${loc.lat},${loc.lng});`
+    )
+    .join("");
+  return `[out:json][timeout:25];(${parts});out center tags;`;
+}
+
+function parseElements(elements: OverpassElement[]): RawPlace[] {
+  const out: RawPlace[] = [];
+  for (const el of elements) {
+    const tags = el.tags || {};
+    const category = amenityToCategory(tags.amenity);
+    if (!category) continue;
+    const lat = el.lat ?? el.center?.lat;
+    const lng = el.lon ?? el.center?.lon;
+    if (typeof lat !== "number" || typeof lng !== "number") continue;
+
+    const meta = CATEGORY_META[category];
+    const is24x7 = (tags.opening_hours || "").replace(/\s/g, "").toLowerCase() === "24/7";
+    const phone = tags.phone || tags["contact:phone"] || tags["contact:mobile"] || meta.emergencyPhone;
+    const name = tags.name || tags["name:en"] || tags.operator || `Nearest ${meta.label}`;
+
+    out.push({
+      id: `${el.type}-${el.id}`,
+      name,
+      category,
+      address: buildAddress(tags),
+      phone,
+      lat,
+      lng,
+      is24x7,
+      notes: buildNotes(category, tags, is24x7),
+    });
+  }
+  return out;
+}
+
+export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking }: SafeHavenProps) {
   const [liveGps, setLiveGps] = useState<Location | null>(null);
   const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
   const [gpsStatus, setGpsStatus] = useState<"ACQUIRING" | "HIGH_ACCURACY" | "UNAVAILABLE">("ACQUIRING");
@@ -124,6 +181,13 @@ export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, o
   const [selectedCategory, setSelectedCategory] = useState<HavenCategory>("ALL");
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
   const [isEnRouteTracking, setIsEnRouteTracking] = useState(false);
+
+  const [rawPlaces, setRawPlaces] = useState<RawPlace[]>([]);
+  const [havenStatus, setHavenStatus] = useState<HavenStatus>("IDLE");
+  const [havenError, setHavenError] = useState<string | null>(null);
+
+  const isFetchingRef = useRef(false);
+  const lastFetchRef = useRef<Location | null>(null);
 
   const applyGpsPosition = useCallback((pos: GeolocationPosition) => {
     setLiveGps({ lat: pos.coords.latitude, lng: pos.coords.longitude });
@@ -134,8 +198,7 @@ export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, o
 
   const handleGpsError = useCallback((err: GeolocationPositionError) => {
     console.warn("GPS error:", err);
-    if (liveGps) return;
-    setGpsStatus("UNAVAILABLE");
+    setGpsStatus((prev) => (prev === "HIGH_ACCURACY" ? prev : "UNAVAILABLE"));
     if (err.code === err.PERMISSION_DENIED) {
       setGpsError("Location permission denied. Enable GPS/location access in your browser settings.");
     } else if (err.code === err.TIMEOUT) {
@@ -143,7 +206,7 @@ export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, o
     } else {
       setGpsError("Unable to determine your location. Check that location services are enabled.");
     }
-  }, [liveGps]);
+  }, []);
 
   const refreshHighAccuracyGps = useCallback(() => {
     if (!("geolocation" in navigator)) {
@@ -158,52 +221,107 @@ export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, o
 
   useEffect(() => {
     refreshHighAccuracyGps();
-
     if ("geolocation" in navigator) {
-      const watchId = navigator.geolocation.watchPosition(
-        applyGpsPosition,
-        handleGpsError,
-        GPS_WATCH_OPTIONS
-      );
+      const watchId = navigator.geolocation.watchPosition(applyGpsPosition, handleGpsError, GPS_WATCH_OPTIONS);
       return () => navigator.geolocation.clearWatch(watchId);
     }
   }, [refreshHighAccuracyGps, applyGpsPosition, handleGpsError]);
 
-  const userCoords = useMemo<Location | null>(() => {
-    return liveGps || latestLocation;
-  }, [liveGps, latestLocation]);
+  const userCoords = useMemo<Location | null>(() => liveGps || latestLocation, [liveGps, latestLocation]);
 
-  const placesWithDistances = useMemo(() => {
-    return BASE_HAVENS.map((place) => {
-      const fallbackDistance = place.displayDistanceMeters;
-      const fallbackWalk = Math.max(1, Math.ceil(fallbackDistance / 75));
+  // Query real facilities from OpenStreetMap around the given coordinates.
+  // Expands the search radius until it finds something (or hits the cap).
+  const fetchNearbyHavens = useCallback(async (loc: Location) => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+    setHavenStatus("LOADING");
+    setHavenError(null);
 
-      if (!userCoords) {
-        return {
-          ...place,
-          computedLat: 0,
-          computedLng: 0,
-          distanceMeters: fallbackDistance,
-          walkTimeMins: fallbackWalk,
-          coordsReady: false,
-        };
+    try {
+      let radius = BASE_SEARCH_RADIUS;
+      while (radius <= MAX_SEARCH_RADIUS) {
+        const query = buildOverpassQuery(loc, radius);
+        let json: { elements?: OverpassElement[] } | null = null;
+        let lastErr: unknown = null;
+
+        for (const endpoint of OVERPASS_ENDPOINTS) {
+          try {
+            const res = await fetch(endpoint, {
+              method: "POST",
+              headers: { "Content-Type": "application/x-www-form-urlencoded" },
+              body: "data=" + encodeURIComponent(query),
+            });
+            if (!res.ok) throw new Error(`Overpass responded ${res.status}`);
+            json = await res.json();
+            break;
+          } catch (e) {
+            lastErr = e;
+          }
+        }
+
+        if (!json) throw lastErr ?? new Error("All Overpass endpoints failed");
+
+        const parsed = parseElements(json.elements || []);
+        if (parsed.length > 0) {
+          setRawPlaces(parsed);
+          setHavenStatus("READY");
+          return;
+        }
+        radius *= 2; // widen and try again
       }
+      setRawPlaces([]);
+      setHavenStatus("EMPTY");
+    } catch (e) {
+      console.warn("Overpass fetch failed", e);
+      setHavenStatus("ERROR");
+      setHavenError("Could not load live nearby safe zones. Check your connection and tap refresh.");
+    } finally {
+      isFetchingRef.current = false;
+    }
+  }, []);
 
-      const computedLat = userCoords.lat + place.offsetLat;
-      const computedLng = userCoords.lng + place.offsetLng;
-      const distanceMeters = Math.round(
-        haversineMeters(userCoords, { lat: computedLat, lng: computedLng })
-      );
-      return {
-        ...place,
-        computedLat,
-        computedLng,
-        distanceMeters,
-        walkTimeMins: Math.max(1, Math.ceil(distanceMeters / 75)),
-        coordsReady: true,
-      };
-    }).sort((a, b) => a.distanceMeters - b.distanceMeters);
-  }, [userCoords]);
+  // Auto-fetch when we first get a location, or after the user has moved a
+  // meaningful distance (>400m) so the list stays relevant without spamming.
+  useEffect(() => {
+    if (!userCoords) return;
+    const last = lastFetchRef.current;
+    const moved = !last || haversineMeters(last, userCoords) > 400;
+    if (moved) {
+      lastFetchRef.current = userCoords;
+      fetchNearbyHavens(userCoords);
+    }
+  }, [userCoords, fetchNearbyHavens]);
+
+  const handleManualRefresh = useCallback(() => {
+    refreshHighAccuracyGps();
+    const target = userCoords;
+    if (target) {
+      lastFetchRef.current = target;
+      fetchNearbyHavens(target);
+    }
+  }, [refreshHighAccuracyGps, userCoords, fetchNearbyHavens]);
+
+  // Compute real distances against the user's live position, then keep the
+  // nearest few per category so the list stays focused on the closest options.
+  const placesWithDistances = useMemo(() => {
+    if (!userCoords) return [];
+    const withDist = rawPlaces.map((p) => {
+      const distanceMeters = Math.round(haversineMeters(userCoords, { lat: p.lat, lng: p.lng }));
+      return { ...p, distanceMeters, walkTimeMins: Math.max(1, Math.ceil(distanceMeters / 75)) };
+    });
+    withDist.sort((a, b) => a.distanceMeters - b.distanceMeters);
+
+    const perCategoryCount: Record<string, number> = {};
+    const limited: typeof withDist = [];
+    for (const p of withDist) {
+      const count = perCategoryCount[p.category] ?? 0;
+      if (count < 4) {
+        perCategoryCount[p.category] = count + 1;
+        limited.push(p);
+      }
+    }
+    return limited;
+  }, [rawPlaces, userCoords]);
 
   const filteredPlaces = useMemo(() => {
     if (selectedCategory === "ALL") return placesWithDistances;
@@ -211,6 +329,12 @@ export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, o
   }, [placesWithDistances, selectedCategory]);
 
   const nearestHaven = placesWithDistances[0] ?? null;
+  const radarMaxDist = useMemo(() => {
+    const max = placesWithDistances.reduce((m, p) => Math.max(m, p.distanceMeters), 0);
+    return Math.max(max, 500);
+  }, [placesWithDistances]);
+
+  const formatDistance = (meters: number) => (meters >= 1000 ? `${(meters / 1000).toFixed(1)}km` : `${meters}m`);
 
   const getCategoryIcon = (category: HavenCategory) => {
     switch (category) {
@@ -242,38 +366,46 @@ export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, o
     }
   };
 
-  const handleOpenDirections = useCallback((place: (typeof placesWithDistances)[number]) => {
-    const openMaps = (origin: Location, destLat: number, destLng: number) => {
-      const mapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${origin.lat},${origin.lng}&destination=${destLat},${destLng}&travelmode=walking`;
-      window.open(mapsUrl, "_blank", "noopener,noreferrer");
-    };
+  const handleOpenDirections = useCallback(
+    (place: { lat: number; lng: number }) => {
+      const openMaps = (origin: Location | null) => {
+        const originParam = origin ? `origin=${origin.lat},${origin.lng}&` : "";
+        const mapsUrl = `https://www.google.com/maps/dir/?api=1&${originParam}destination=${place.lat},${place.lng}&travelmode=walking`;
+        window.open(mapsUrl, "_blank", "noopener,noreferrer");
+      };
 
-    const navigateFrom = (origin: Location) => {
-      const destLat = place.coordsReady ? place.computedLat : origin.lat + place.offsetLat;
-      const destLng = place.coordsReady ? place.computedLng : origin.lng + place.offsetLng;
-      openMaps(origin, destLat, destLng);
-    };
-
-    if (userCoords) {
-      navigateFrom(userCoords);
-      return;
-    }
-
-    if (!("geolocation" in navigator)) return;
-
-    navigator.geolocation.getCurrentPosition(
-      (pos) => navigateFrom({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-      () => {
-        if (liveGps) navigateFrom(liveGps);
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-    );
-  }, [liveGps, userCoords]);
+      if (userCoords) {
+        openMaps(userCoords);
+        return;
+      }
+      if (!("geolocation" in navigator)) {
+        openMaps(null);
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => openMaps({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+        () => openMaps(null),
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
+    },
+    [userCoords]
+  );
 
   const handleSelectPlace = (place: (typeof placesWithDistances)[number]) => {
     setSelectedPlaceId(place.id);
     handleOpenDirections(place);
   };
+
+  const listStatusMessage =
+    havenStatus === "LOADING"
+      ? "Scanning OpenStreetMap for the real nearest police, pharmacy, petrol & hospital around you…"
+      : havenStatus === "EMPTY"
+      ? "No verified facilities found nearby in OpenStreetMap. Try again from a different spot."
+      : havenStatus === "ERROR"
+      ? havenError
+      : !userCoords
+      ? "Waiting for your location to find the exact nearest safe zones…"
+      : null;
 
   return (
     <div className="space-y-6">
@@ -283,7 +415,7 @@ export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, o
         <div className="space-y-2 z-10">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest bg-emerald-500/10 text-emerald-700 border border-emerald-500/20 flex items-center gap-1.5 shadow-xs">
-              <Compass size={13} className="animate-spin text-emerald-600" /> Safe Zone Geofence
+              <Compass size={13} className="animate-spin text-emerald-600" /> Live OSM Safe Zones
             </span>
 
             {gpsStatus === "HIGH_ACCURACY" && userCoords && (
@@ -305,11 +437,17 @@ export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, o
                 <AlertTriangle size={11} /> GPS Unavailable
               </span>
             )}
+
+            {havenStatus === "LOADING" && (
+              <span className="px-3 py-1 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-700 border border-emerald-500/20 flex items-center gap-1.5">
+                <RefreshCw size={11} className="animate-spin text-emerald-600" /> Finding real places…
+              </span>
+            )}
           </div>
 
           <h2 className="text-3xl md:text-4xl font-serif font-bold text-zinc-900 tracking-tight">Safe Haven Radar</h2>
           <p className="text-zinc-500 text-sm max-w-2xl leading-relaxed">
-            Real-time geofenced navigation to 24/7 verified open safe zones (police posts, late-night pharmacies, petrol pumps, ER centers) within immediate walking distance.
+            Real-time navigation to the exact nearest verified facilities — police stations, pharmacies, petrol pumps and hospitals — sourced live from OpenStreetMap around your actual GPS position.
           </p>
 
           {gpsError && (
@@ -320,22 +458,12 @@ export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, o
         </div>
 
         <div className="flex items-center gap-3 flex-wrap shrink-0 z-10 pt-2 xl:pt-0">
-          {onTriggerFakeCall && (
-            <button
-              onClick={onTriggerFakeCall}
-              className="px-4 py-3 bg-zinc-900 hover:bg-zinc-800 text-white rounded-2xl font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-md active:scale-95 border border-zinc-800"
-              title="Simulate believable incoming call distraction"
-            >
-              <PhoneCall size={15} className="text-emerald-400 animate-pulse" /> Simulate Fake Call
-            </button>
-          )}
-
           <button
-            onClick={refreshHighAccuracyGps}
+            onClick={handleManualRefresh}
             className="p-3 bg-white hover:bg-zinc-100 text-zinc-700 rounded-2xl border border-zinc-200/90 transition-all shadow-xs"
-            title="Refresh High-Accuracy GPS Coordinates"
+            title="Refresh GPS & re-scan nearest real facilities"
           >
-            <RefreshCw size={16} className={gpsStatus === "ACQUIRING" ? "animate-spin" : ""} />
+            <RefreshCw size={16} className={gpsStatus === "ACQUIRING" || havenStatus === "LOADING" ? "animate-spin" : ""} />
           </button>
 
           {nearestHaven && (
@@ -357,7 +485,7 @@ export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, o
                 </>
               ) : (
                 <>
-                  <Navigation size={16} /> Navigate Nearest ({nearestHaven.distanceMeters}m)
+                  <Navigation size={16} /> Navigate Nearest ({formatDistance(nearestHaven.distanceMeters)})
                 </>
               )}
             </button>
@@ -365,9 +493,15 @@ export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, o
         </div>
       </div>
 
-      {gpsError && (
-        <div className="glass-card p-4 rounded-[20px] border border-amber-200/90 bg-amber-50/50 text-xs text-amber-800">
-          {gpsError} — safe haven list is still available below.
+      {havenStatus === "ERROR" && havenError && (
+        <div className="glass-card p-4 rounded-[24px] border border-amber-200/90 bg-amber-50/50 text-xs text-amber-800 flex items-center justify-between gap-3">
+          <span>{havenError}</span>
+          <button
+            onClick={handleManualRefresh}
+            className="px-3 py-1.5 rounded-lg bg-amber-600 text-white font-bold shrink-0 hover:bg-amber-700 transition-all"
+          >
+            Retry
+          </button>
         </div>
       )}
 
@@ -376,7 +510,7 @@ export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, o
             <div className="flex items-center justify-between z-10">
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-400">Live GPS Radar</p>
-                <h3 className="text-xl font-bold text-white mt-0.5">800m Safety Perimeter</h3>
+                <h3 className="text-xl font-bold text-white mt-0.5">{formatDistance(radarMaxDist)} Nearest-Zone Range</h3>
               </div>
               <span className="text-[10px] bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 px-2.5 py-1 rounded-full font-mono font-bold">
                 {gpsStatus === "HIGH_ACCURACY" ? "GPS Active" : "Localizing..."}
@@ -388,8 +522,8 @@ export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, o
               <div className="absolute w-40 h-40 rounded-full border border-emerald-500/25" />
               <div className="absolute w-24 h-24 rounded-full border border-zinc-800" />
 
-              <span className="absolute top-3 text-[9px] font-mono text-zinc-600">800m</span>
-              <span className="absolute top-14 text-[9px] font-mono text-zinc-600">400m</span>
+              <span className="absolute top-3 text-[9px] font-mono text-zinc-600">{formatDistance(radarMaxDist)}</span>
+              <span className="absolute top-14 text-[9px] font-mono text-zinc-600">{formatDistance(Math.round(radarMaxDist / 2))}</span>
 
               <div className="absolute inset-0 bg-[conic-gradient(from_0deg_at_50%_50%,rgba(16,185,129,0.22)_0deg,transparent_60deg)] animate-[spin_6s_linear_infinite]" />
 
@@ -399,11 +533,10 @@ export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, o
               </div>
 
               {placesWithDistances.map((place, idx) => {
-                const angleDeg = idx * 72 - 50;
+                const angleDeg = idx * 47 - 50;
                 const angleRad = angleDeg * (Math.PI / 180);
-                const maxDist = 800;
-                const normalizedDist = Math.min(1, place.distanceMeters / maxDist);
-                const radiusPixels = 48 + normalizedDist * 60;
+                const normalizedDist = Math.min(1, place.distanceMeters / radarMaxDist);
+                const radiusPixels = 30 + normalizedDist * 78;
                 const x = Math.cos(angleRad) * radiusPixels;
                 const y = Math.sin(angleRad) * radiusPixels;
                 const isSelected = selectedPlaceId === place.id;
@@ -416,7 +549,7 @@ export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, o
                     className={`absolute z-20 transition-all duration-300 flex items-center gap-1.5 p-1 rounded-full group ${
                       isSelected ? "scale-115 z-30" : "hover:scale-110"
                     }`}
-                    title={`${place.name} (${place.distanceMeters}m)`}
+                    title={`${place.name} (${formatDistance(place.distanceMeters)})`}
                   >
                     <div
                       className={`w-3.5 h-3.5 rounded-full transition-all ${
@@ -432,7 +565,7 @@ export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, o
                           : "bg-zinc-900/90 text-zinc-300 border-zinc-800 opacity-80 group-hover:opacity-100"
                       }`}
                     >
-                      {place.distanceMeters}m
+                      {formatDistance(place.distanceMeters)}
                     </span>
                   </button>
                 );
@@ -443,12 +576,12 @@ export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, o
               <div className="flex items-center gap-2 text-zinc-300 min-w-0 pr-2">
                 <MapPin size={15} className="text-emerald-400 shrink-0" />
                 <span className="truncate">
-                  Nearest: <strong className="text-white font-semibold">{nearestHaven?.name}</strong>
+                  Nearest: <strong className="text-white font-semibold">{nearestHaven?.name ?? "Searching…"}</strong>
                 </span>
               </div>
               {nearestHaven && (
                 <span className="font-mono text-emerald-400 font-bold shrink-0 bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20">
-                  {nearestHaven.distanceMeters}m
+                  {formatDistance(nearestHaven.distanceMeters)}
                 </span>
               )}
             </div>
@@ -476,7 +609,26 @@ export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, o
               ))}
             </div>
 
-            <div className="space-y-3">
+            {listStatusMessage && (
+              <div className="glass-card p-8 rounded-[24px] border border-zinc-200/90 flex flex-col items-center justify-center text-center gap-3">
+                {havenStatus === "LOADING" ? (
+                  <RefreshCw size={22} className="animate-spin text-emerald-600" />
+                ) : havenStatus === "ERROR" ? (
+                  <AlertTriangle size={22} className="text-amber-600" />
+                ) : (
+                  <Compass size={22} className="text-zinc-400 animate-spin" />
+                )}
+                <p className="text-sm text-zinc-500 max-w-md">{listStatusMessage}</p>
+              </div>
+            )}
+
+            {filteredPlaces.length === 0 && !listStatusMessage && havenStatus === "READY" && (
+              <div className="glass-card p-8 rounded-[24px] border border-zinc-200/90 text-center text-sm text-zinc-500">
+                No {selectedCategory.toLowerCase()} facilities found nearby. Try another category.
+              </div>
+            )}
+
+            <div className="space-y-4">
               {filteredPlaces.map((place) => {
                 const isSelected = selectedPlaceId === place.id;
                 return (
@@ -503,7 +655,7 @@ export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, o
                             </span>
                           )}
                           <span className="text-xs font-mono font-bold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-lg border border-emerald-200">
-                            {place.distanceMeters}m away (~{place.walkTimeMins} min walk)
+                            {formatDistance(place.distanceMeters)} away (~{place.walkTimeMins} min walk)
                           </span>
                         </div>
 
@@ -533,7 +685,7 @@ export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, o
                           onClick={(e) => e.stopPropagation()}
                           className="px-4 py-2.5 rounded-xl bg-zinc-100 hover:bg-zinc-200 text-zinc-800 font-bold text-xs flex items-center gap-1.5 transition-all"
                         >
-                          <Phone size={14} className="text-zinc-600" /> Call Station
+                          <Phone size={14} className="text-zinc-600" /> Call
                         </a>
                       </div>
                     </div>
@@ -546,3 +698,4 @@ export default function SafeHavenMap({ latestLocation, onStartEnRouteTracking, o
     </div>
   );
 }
+

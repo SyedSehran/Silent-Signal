@@ -141,6 +141,7 @@ function formatTriggerMethod(method: string): string {
     AI_SUGGESTED: "AI-assisted confirmation (user confirmed)",
     POWER_BUTTON_5X: "Power button pressed 5 times",
     PANIC_TIMER: "Panic timer expired without dismissal",
+    JOURNEY_TIMEOUT: "Safe-arrival timer expired before arrival was confirmed",
     MANUAL: "Manual SOS activation",
     INTERVAL: "Live location update",
     BATCH: "Queued location sync",
